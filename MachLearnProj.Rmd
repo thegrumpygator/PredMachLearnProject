@@ -1,0 +1,138 @@
+---
+title: "MachineLearningProject"
+author: "Brian L. Fuller"
+date: "November 16, 2015"
+output: 
+  html_document: 
+    keep_md: yes
+---
+
+Read Data Files
+====
+
+Read the datafiles into two frames, one for training and one for testing.
+```{r, ReadDataFiles}
+library(readr)
+library(caret)
+library(dplyr)
+library(kernlab)
+
+trainDat <- read_csv("pml-training.csv",
+                      col_names = TRUE,
+                      col_types = "ncnnccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnc")
+
+
+
+#str(trainDat)
+
+## these are the 20 cases for submission...
+testDat <- read_csv("pml-testing.csv", 
+                      col_names = TRUE,
+                      col_types = "ncnnccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn")
+```
+
+```{r, PartitionData}
+# partition the data for training/validation purposes
+inTrain <- createDataPartition(y = trainDat$classe, 
+                               p = 0.75, 
+                               list = FALSE)
+
+training <- trainDat[inTrain, ]
+testing <- trainDat[-inTrain, ]
+
+# get the real training columns
+
+# Zero Variance fields...
+#  kurtosis_yaw_belt, skewness_yaw_belt, amplitude_yaw_belt, kurtosis_yaw_dumbbell, skewness_yaw_dumbbell, amplitude_yaw_dumbbell, kurtosis_yaw_forearm, skewness_yaw_forearm, amplitude_yaw_forearm
+
+trainingCut <- training %>% select(-user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,
+                                   -cvtd_timestamp, -new_window, -num_window, 
+                                   -kurtosis_yaw_belt, -skewness_yaw_belt, -amplitude_yaw_belt, 
+                                   -kurtosis_yaw_dumbbell, -skewness_yaw_dumbbell, 
+                                   -amplitude_yaw_dumbbell, -kurtosis_yaw_forearm, 
+                                   -skewness_yaw_forearm, -amplitude_yaw_forearm,
+                                   -roll_belt, -total_accel_belt, -total_accel_dumbbell,
+                                   -gyros_dumbbell_z, -pitch_belt, -accel_belt_z,
+                                   -magnet_belt_z, -magnet_arm_z, -yaw_dumbbell,
+                                   -gyros_dumbbell_x, -accel_dumbbell_z, -gyros_forearm_z)
+trainingCut <- trainingCut[ , 2:133]
+M<- abs(cor(trainingCut[, -132]))
+diag(M) <- 0
+which(M > 0.8, arr.ind = T)
+```
+
+```{r, TrainModel}
+# use 5-fold Cross Validation straight-up
+cvControl <- trainControl(method = "repeatedcv",
+                          repeats = 3,
+                          #number = 5,
+                          #summaryFunction = twoClassSummary,
+                          classProbs = TRUE)
+
+modelFitCV <- train(classe ~ ., data = trainingCut,
+                    method = "svmRadial",
+                    tunelength = 9,
+                    preProc = c("center", "scale"),
+                    metric = "ROC",
+                    trControl = cvControl)
+
+modelFitCV
+
+modelFitCV$finalModel
+
+svmPred <- predict(modelFitCV, testing[, names(testing) != "classe"])
+
+confusionMatrix(svmPred, testing$classe)
+
+
+```
+
+```{r}
+trainingCut <- training %>% select(-user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,
+                                   -cvtd_timestamp, -new_window, -num_window, 
+                                   -kurtosis_yaw_belt, -skewness_yaw_belt, -amplitude_yaw_belt, 
+                                   -kurtosis_yaw_dumbbell, -skewness_yaw_dumbbell, 
+                                   -amplitude_yaw_dumbbell, -kurtosis_yaw_forearm, 
+                                   -skewness_yaw_forearm, -amplitude_yaw_forearm,
+                                   -roll_belt, -total_accel_belt, -total_accel_dumbbell,
+                                   -gyros_dumbbell_z, -pitch_belt, -accel_belt_z,
+                                   -magnet_belt_z, -magnet_arm_z, -yaw_dumbbell,
+                                   -gyros_dumbbell_x, -accel_dumbbell_z, -gyros_forearm_z)
+trainingCut <- trainingCut[ , 2:133]
+
+testingCut <- testing %>% select(-user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,
+                                   -cvtd_timestamp, -new_window, -num_window, 
+                                   -kurtosis_yaw_belt, -skewness_yaw_belt, -amplitude_yaw_belt, 
+                                   -kurtosis_yaw_dumbbell, -skewness_yaw_dumbbell, 
+                                   -amplitude_yaw_dumbbell, -kurtosis_yaw_forearm, 
+                                   -skewness_yaw_forearm, -amplitude_yaw_forearm,
+                                   -roll_belt, -total_accel_belt, -total_accel_dumbbell,
+                                   -gyros_dumbbell_z, -pitch_belt, -accel_belt_z,
+                                   -magnet_belt_z, -magnet_arm_z, -yaw_dumbbell,
+                                   -gyros_dumbbell_x, -accel_dumbbell_z, -gyros_forearm_z)
+testingCut <- testingCut[ , 2:133]
+
+preProc <- preProcess(trainingCut[, -132], method = "pca")
+
+modelPC <- train(classe ~ ., 
+                 method = "svmRadial", 
+                 data = trainingCut, 
+                 preProcess = "pca", 
+                 trControl = cvControl)
+
+```
+
+How To Build Model
+===
+
+How To Cross Validate Model
+===
+
+Expected Out of Sample Error
+===
+
+Rationale for Choices
+===
+
+20 Test Cases
+===
