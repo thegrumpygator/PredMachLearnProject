@@ -7,21 +7,35 @@ output:
     keep_md: yes
 ---
 
-Read Data Files
-====
+Executive Summary
+===
+This report describes how I built a model that predicts the manner in which
+several individuals performed an exercise. The following sections describes
+how the model was constructed, how I used cross-validation, what the expected 
+out of sample error is and why I made the choices I did.
 
-Read the datafiles into two frames, one for training and one for testing.
-```{r, ReadDataFiles}
+Read Data Files
+---
+
+Read the datafiles into two frames, one for training and one for testing. 
+In this part the testDat is the data for the 20 cases used for submission. 
+All model design and testing will be performed on the trainDat data set.
+For the trainDat set, convert the response field ("classe") to a factor. 
+
+```{r, ReadDataFiles, cache = TRUE}
 library(readr)
 library(caret)
 library(dplyr)
 library(kernlab)
+library(doParallel) # use parallel to optimize performance
+
+registerDoParallel(makeCluster(detectCores()))
 
 trainDat <- read_csv("pml-training.csv",
                       col_names = TRUE,
                       col_types = "ncnnccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnc")
 
-
+trainDat$classe <- as.factor(trainDat$classe)
 
 #str(trainDat)
 
@@ -31,7 +45,14 @@ testDat <- read_csv("pml-testing.csv",
                       col_types = "ncnnccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn")
 ```
 
-```{r, PartitionData}
+Data Partitioning
+---
+
+For model building and exploration, I will create a training set and a testing
+set from within the trainDat data. The **training** set will have 75% of the
+trainDat data with the remaining data in **the testing** set.
+
+```{r, PartitionData, cache = TRUE}
 # partition the data for training/validation purposes
 inTrain <- createDataPartition(y = trainDat$classe, 
                                p = 0.75, 
@@ -39,100 +60,118 @@ inTrain <- createDataPartition(y = trainDat$classe,
 
 training <- trainDat[inTrain, ]
 testing <- trainDat[-inTrain, ]
+```
 
-# get the real training columns
+Predictor Selection
+---
 
-# Zero Variance fields...
-#  kurtosis_yaw_belt, skewness_yaw_belt, amplitude_yaw_belt, kurtosis_yaw_dumbbell, skewness_yaw_dumbbell, amplitude_yaw_dumbbell, kurtosis_yaw_forearm, skewness_yaw_forearm, amplitude_yaw_forearm
+Normally one would not look at the test data during data exploration.
+However, since variables in the "real" testing set that are NA can't be used in
+predictions, I will remove them from the training set. Also, the various ID and
+TIME columns will be removed from the training set since they do not factor into
+the way the various people performed their exercise.
 
-trainingCut <- training %>% select(-user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,
-                                   -cvtd_timestamp, -new_window, -num_window, 
-                                   -kurtosis_yaw_belt, -skewness_yaw_belt, -amplitude_yaw_belt, 
-                                   -kurtosis_yaw_dumbbell, -skewness_yaw_dumbbell, 
-                                   -amplitude_yaw_dumbbell, -kurtosis_yaw_forearm, 
-                                   -skewness_yaw_forearm, -amplitude_yaw_forearm,
-                                   -roll_belt, -total_accel_belt, -total_accel_dumbbell,
-                                   -gyros_dumbbell_z, -pitch_belt, -accel_belt_z,
-                                   -magnet_belt_z, -magnet_arm_z, -yaw_dumbbell,
-                                   -gyros_dumbbell_x, -accel_dumbbell_z, -gyros_forearm_z)
-trainingCut <- trainingCut[ , 2:133]
-M<- abs(cor(trainingCut[, -132]))
+```{r, DataExplore, cache = TRUE}
+# determine list of useless variables from testDat
+nsv <- nearZeroVar(testDat, saveMetrics = TRUE)
+#nsv[ nsv$nzv == TRUE,] ## not for the report
+uselessvars <- row.names(nsv[ nsv$nzv == TRUE,])
+
+# remove useless columns from training set
+training <- training[, !names(trainDat) %in% uselessvars, drop = F]
+
+# remove left 6 vars
+training <- training[7:length(training)]
+```
+
+Check to see if there are any over-correlated variables and if
+there are any variables that have near zero variance.
+```{r, DataExplore2, cache = TRUE}
+# are there any over-correlated vars? YES!
+M <- abs(cor(training[, 1:length(training)-1])) 
 diag(M) <- 0
-which(M > 0.8, arr.ind = T)
+which(M>0.8, arr.ind = T)
+
+# are there any nearzerovariance data in the training? NO!
+nsvtrain <- nearZeroVar(training, saveMetrics = TRUE)
+nsvtrain[ nsvtrain$zeroVar == TRUE,]
+nsvtrain[ nsvtrain$nzv == TRUE,]
 ```
 
-```{r, TrainModel}
-# use 5-fold Cross Validation straight-up
-cvControl <- trainControl(method = "repeatedcv",
-                          repeats = 3,
-                          #number = 5,
-                          #summaryFunction = twoClassSummary,
-                          classProbs = TRUE)
+Since there are over-correlated variables, I will build models with and 
+without Principal Components during pre-processing. However, since there are no
+variables with near zero variance, no more columns need to be removed before 
+model selection.
 
-modelFitCV <- train(classe ~ ., data = trainingCut,
-                    method = "svmRadial",
-                    tunelength = 9,
-                    preProc = c("center", "scale"),
-                    metric = "ROC",
-                    trControl = cvControl)
+Model Selection
+---
 
-modelFitCV
+For this project, a random forest model will be created. First, I will
+create a random forest model using principal components during preprocessing
+and compare the results when not using a preprocessor. Seeds will be set
+to aid in reproducibility. During model training, Five-Fold cross-validation
+will be employed to reduce out of sample error and prevent over-fitting.
 
-modelFitCV$finalModel
+```{r, ModelSelection, cache = TRUE}
+# train a random forest using 5-fold cross validation
+# and pca preprocessor (because of over-correlated data)
+set.seed(1234)
+modelFitPCA <- train(classe ~ .,
+                  method = "rf",
+                  preProcess = "pca",
+                  trControl = trainControl(method = "cv", number = 5),
+                  data = training)
 
-svmPred <- predict(modelFitCV, testing[, names(testing) != "classe"])
+modelFitPCA
 
-confusionMatrix(svmPred, testing$classe)
+modelFitPCA$finalModel
 
+# compare with non-pca preprocess
+set.seed(1234)
+modelFit <- train(classe ~ .,
+                  method = "rf",
+                  trControl = trainControl(method = "cv", number = 5),
+                  data = training)
 
+modelFit
+
+modelFit$finalModel
+
+# non-pca model performs better-- use it.
 ```
 
-```{r}
-trainingCut <- training %>% select(-user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,
-                                   -cvtd_timestamp, -new_window, -num_window, 
-                                   -kurtosis_yaw_belt, -skewness_yaw_belt, -amplitude_yaw_belt, 
-                                   -kurtosis_yaw_dumbbell, -skewness_yaw_dumbbell, 
-                                   -amplitude_yaw_dumbbell, -kurtosis_yaw_forearm, 
-                                   -skewness_yaw_forearm, -amplitude_yaw_forearm,
-                                   -roll_belt, -total_accel_belt, -total_accel_dumbbell,
-                                   -gyros_dumbbell_z, -pitch_belt, -accel_belt_z,
-                                   -magnet_belt_z, -magnet_arm_z, -yaw_dumbbell,
-                                   -gyros_dumbbell_x, -accel_dumbbell_z, -gyros_forearm_z)
-trainingCut <- trainingCut[ , 2:133]
-
-testingCut <- testing %>% select(-user_name, -raw_timestamp_part_1, -raw_timestamp_part_2,
-                                   -cvtd_timestamp, -new_window, -num_window, 
-                                   -kurtosis_yaw_belt, -skewness_yaw_belt, -amplitude_yaw_belt, 
-                                   -kurtosis_yaw_dumbbell, -skewness_yaw_dumbbell, 
-                                   -amplitude_yaw_dumbbell, -kurtosis_yaw_forearm, 
-                                   -skewness_yaw_forearm, -amplitude_yaw_forearm,
-                                   -roll_belt, -total_accel_belt, -total_accel_dumbbell,
-                                   -gyros_dumbbell_z, -pitch_belt, -accel_belt_z,
-                                   -magnet_belt_z, -magnet_arm_z, -yaw_dumbbell,
-                                   -gyros_dumbbell_x, -accel_dumbbell_z, -gyros_forearm_z)
-testingCut <- testingCut[ , 2:133]
-
-preProc <- preProcess(trainingCut[, -132], method = "pca")
-
-modelPC <- train(classe ~ ., 
-                 method = "svmRadial", 
-                 data = trainingCut, 
-                 preProcess = "pca", 
-                 trControl = cvControl)
-
-```
-
-How To Build Model
-===
-
-How To Cross Validate Model
-===
+Based on the above results, the better model does not use principal components
+during preprocessing. It is this simpler model that is selected for 
+validation and prediction on the testing data (from the trainDat set) as 
+well as prediction on the actual test data (testDat set).
 
 Expected Out of Sample Error
-===
+---
 
-Rationale for Choices
-===
+To compute the expected out of sample error, I will use the data from the
+training file which was set aside for testing/diagnostics. The following code 
+predicts **classe** on data which was not used to train the model and displays 
+the confusion matrix with associated accuracy metrics.
+
+```{r, Validation, cache = TRUE}
+# out of sample error from predicting with testing data set
+rfPred <- predict(modelFit, newdata = testing)
+
+confusionMatrix(rfPred, testing$classe)
+```
+
+From the above, one can see that the accuracy of predictions on data which
+was not used in training is 0.99. This would indicate that my expected out of
+sample error should be about 0.01 or one in 100.
 
 20 Test Cases
-===
+---
+The 20 test cases for submission were predicted using the above model. Based
+on submission success, all 20 cases were correctly predicted.
+
+```{r, submission, cache = TRUE}
+# use the model to predict cases for submission
+subPred <- predict(modelFit, newdata = testDat)
+
+subPred
+```
