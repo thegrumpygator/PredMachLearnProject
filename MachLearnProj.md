@@ -2,19 +2,30 @@
 Brian L. Fuller  
 November 16, 2015  
 
+Executive Summary
+===
+This report describes how I built a model that predicts the manner in which
+several individuals performed an exercise. The following sections describes
+how the model was constructed, how I used cross-validation, what the expected 
+out of sample error is and why I made the choices I did.
+
 Read Data Files
-====
+---
 
 Read the datafiles into two frames, one for training and one for testing. 
-Convert the "classe" variable to a factor variable. In this part the 
-testDat is the data for the 20 cases used for submission. FOr the trainDat
-set, convert the response field to a factor.
+In this part the testDat is the data for the 20 cases used for submission. 
+All model design and testing will be performed on the trainDat data set.
+For the trainDat set, convert the response field ("classe") to a factor. 
+
 
 ```r
 library(readr)
 library(caret)
 library(dplyr)
 library(kernlab)
+library(doParallel) # use parallel to optimize performance
+
+registerDoParallel(makeCluster(detectCores()))
 
 trainDat <- read_csv("pml-training.csv",
                       col_names = TRUE,
@@ -30,8 +41,13 @@ testDat <- read_csv("pml-testing.csv",
                       col_types = "ncnnccnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn")
 ```
 
+Data Partitioning
+---
+
 For model building and exploration, I will create a training set and a testing
-set. The training set will have 75% of the trainDat data.
+set from within the trainDat data. The **training** set will have 75% of the
+trainDat data with the remaining data in **the testing** set.
+
 
 ```r
 # partition the data for training/validation purposes
@@ -43,10 +59,15 @@ training <- trainDat[inTrain, ]
 testing <- trainDat[-inTrain, ]
 ```
 
-Variables in the "real" testing set that are NA can't be used in predictions,
-so they will be removed from the training set. Also, ID and TIME columns will
-be removed from the training set since they do not factor into the way an
-exercise was performed.
+Predictor Selection
+---
+
+Normally one would not look at the test data during data exploration.
+However, since variables in the "real" testing set that are NA can't be used in
+predictions, I will remove them from the training set. Also, the various ID and
+TIME columns will be removed from the training set since they do not factor into
+the way the various people performed their exercise.
+
 
 ```r
 # determine list of useless variables from testDat
@@ -59,7 +80,12 @@ training <- training[, !names(trainDat) %in% uselessvars, drop = F]
 
 # remove left 6 vars
 training <- training[7:length(training)]
+```
 
+Check to see if there are any over-correlated variables and if
+there are any variables that have near zero variance.
+
+```r
 # are there any over-correlated vars? YES!
 M <- abs(cor(training[, 1:length(training)-1])) 
 diag(M) <- 0
@@ -118,20 +144,22 @@ nsvtrain[ nsvtrain$nzv == TRUE,]
 ## <0 rows> (or 0-length row.names)
 ```
 
+Since there are over-correlated variables, I will build models with and 
+without Principal Components during pre-processing. However, since there are no
+variables with near zero variance, no more columns need to be removed before 
+model selection.
+
+Model Selection
+---
+
+For this project, a random forest model will be created. First, I will
+create a random forest model using principal components during preprocessing
+and compare the results when not using a preprocessor. Seeds will be set
+to aid in reproducibility. During model training, Five-Fold cross-validation
+will be employed to reduce out of sample error and prevent over-fitting.
+
+
 ```r
-# use parallel to optimize performance
-library(doParallel)
-```
-
-```
-## Loading required package: foreach
-## Loading required package: iterators
-## Loading required package: parallel
-```
-
-```r
-registerDoParallel(makeCluster(detectCores()))
-
 # train a random forest using 5-fold cross validation
 # and pca preprocessor (because of over-correlated data)
 set.seed(1234)
@@ -140,21 +168,7 @@ modelFitPCA <- train(classe ~ .,
                   preProcess = "pca",
                   trControl = trainControl(method = "cv", number = 5),
                   data = training)
-```
 
-```
-## Loading required package: randomForest
-## randomForest 4.6-12
-## Type rfNews() to see new features/changes/bug fixes.
-## 
-## Attaching package: 'randomForest'
-## 
-## The following object is masked from 'package:dplyr':
-## 
-##     combine
-```
-
-```r
 modelFitPCA
 ```
 
@@ -172,9 +186,9 @@ modelFitPCA
 ## Resampling results across tuning parameters:
 ## 
 ##   mtry  Accuracy   Kappa      Accuracy SD  Kappa SD   
-##    2    0.9558363  0.9440938  0.006005439  0.007605533
-##   27    0.9336863  0.9160429  0.005593151  0.007083639
-##   52    0.9321236  0.9140582  0.005467738  0.006929715
+##    2    0.9554965  0.9436615  0.006803732  0.008605432
+##   27    0.9326673  0.9147469  0.003545871  0.004493325
+##   52    0.9318518  0.9137123  0.007369594  0.009340774
 ## 
 ## Accuracy was used to select the optimal model using  the largest value.
 ## The final value used for the model was mtry = 2.
@@ -226,9 +240,9 @@ modelFit
 ## Resampling results across tuning parameters:
 ## 
 ##   mtry  Accuracy   Kappa      Accuracy SD  Kappa SD   
-##    2    0.9883814  0.9853008  0.004001059  0.005064280
-##   27    0.9895363  0.9867627  0.002524772  0.003195479
-##   52    0.9797520  0.9743797  0.003627432  0.004595090
+##    2    0.9885853  0.9855583  0.003980600  0.005038259
+##   27    0.9889249  0.9859892  0.001946607  0.002463920
+##   52    0.9792765  0.9737768  0.003582276  0.004539883
 ## 
 ## Accuracy was used to select the optimal model using  the largest value.
 ## The final value used for the model was mtry = 27.
@@ -258,7 +272,23 @@ modelFit$finalModel
 
 ```r
 # non-pca model performs better-- use it.
+```
 
+Based on the above results, the better model does not use principal components
+during preprocessing. It is this simpler model that is selected for 
+validation and prediction on the testing data (from the trainDat set) as 
+well as prediction on the actual test data (testDat set).
+
+Expected Out of Sample Error
+---
+
+To compute the expected out of sample error, I will use the data from the
+training file which was set aside for testing/diagnostics. The following code 
+predicts **classe** on data which was not used to train the model and displays 
+the confusion matrix with associated accuracy metrics.
+
+
+```r
 # out of sample error from predicting with testing data set
 rfPred <- predict(modelFit, newdata = testing)
 
@@ -299,6 +329,16 @@ confusionMatrix(rfPred, testing$classe)
 ## Balanced Accuracy      0.9978   0.9909   0.9931   0.9895   0.9985
 ```
 
+From the above, one can see that the accuracy of predictions on data which
+was not used in training is 0.99. This would indicate that my expected out of
+sample error should be about 0.01 or one in 100.
+
+20 Test Cases
+---
+The 20 test cases for submission were predicted using the above model. Based
+on submission success, all 20 cases were correctly predicted.
+
+
 ```r
 # use the model to predict cases for submission
 subPred <- predict(modelFit, newdata = testDat)
@@ -310,19 +350,3 @@ subPred
 ##  [1] B A B A A E D B A A B C B A E E A B B B
 ## Levels: A B C D E
 ```
-
----------------------------------------------------------------------
-How To Build Model
-===
-
-How To Cross Validate Model
-===
-
-Expected Out of Sample Error
-===
-
-Rationale for Choices
-===
-
-20 Test Cases
-===
